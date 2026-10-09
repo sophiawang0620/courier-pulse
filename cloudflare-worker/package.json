@@ -1,0 +1,17 @@
+{
+  "name": "courier-pulse-worker",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "node --check src/worker.js",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "4.148.0"
+  }
+}

@@ -1,0 +1,32 @@
+# Local secrets and runtime state
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.kuayue-*.json
+.kuayue-*.json.tmp
+*.tmp
+*.log
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Node / Cloudflare
+node_modules/
+.wrangler/
+coverage/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.planning/
+.DS_Store
+Thumbs.db
+Desktop.ini

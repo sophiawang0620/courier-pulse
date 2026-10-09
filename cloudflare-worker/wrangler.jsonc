@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "courier-pulse",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-22",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 }
+  },
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "KYE_EVENTS",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+    },
+    {
+      "binding": "KYE_WATCHLIST",
+      "id": "REPLACE_WITH_WATCHLIST_KV_NAMESPACE_ID"
+    }
+  ]
+}

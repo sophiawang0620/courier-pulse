@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  public-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Scan full Git history
+        run: python scripts/audit_public_history.py
+
+  python:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run Python tests
+        run: python -m unittest discover -s scripts -p "test_*.py"
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable locked package manager
+        run: corepack enable && corepack prepare pnpm@11.25.0 --activate
+      - name: Install locked Worker tooling
+        run: pnpm install --frozen-lockfile
+      - name: Check Worker syntax
+        run: pnpm run check
+      - name: Verify dashboard copy is synchronized
+        run: cmp -s src/worker.js worker-code.txt
+      - name: Run Worker tests
+        run: pnpm test

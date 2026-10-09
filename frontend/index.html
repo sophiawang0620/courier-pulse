@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Courier Pulse · 快递追踪</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+    :root { --blue:#2563eb; --blue-dark:#1e40af; --orange:#ea580c; --ink:#172033; --muted:#64748b; --line:#dbe5f2; --paper:#fff; --wash:#eff6ff; --green:#16845b; --red:#c2413a; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:linear-gradient(180deg,#eff6ff 0,#f8fbff 420px,#fff 100%); font:16px/1.55 'Noto Sans SC','Microsoft YaHei',sans-serif; }
+    button,input { font:inherit; }
+    button { cursor:pointer; }
+    .shell { width:min(1080px,calc(100% - 32px)); margin:0 auto; padding:28px 0 56px; }
+    header { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:48px; }
+    .brand { display:flex; align-items:center; gap:12px; font-weight:700; letter-spacing:.02em; }
+    .mark { display:grid; place-items:center; width:38px; height:38px; border-radius:12px; color:#fff; background:var(--blue); box-shadow:0 8px 18px #2563eb33; }
+    .mark svg { width:22px; height:22px; }
+    .status-pill { display:flex; align-items:center; gap:8px; color:var(--green); font-size:14px; }
+    .dot { width:8px; height:8px; border-radius:50%; background:#2eb67d; box-shadow:0 0 0 4px #2eb67d22; }
+    .hero { max-width:760px; margin-bottom:38px; }
+    h1 { margin:0 0 14px; color:var(--blue-dark); font-size:clamp(32px,5vw,58px); line-height:1.12; letter-spacing:-.045em; }
+    .lede { max-width:630px; margin:0; color:var(--muted); font-size:18px; }
+    .add-card { display:flex; gap:10px; align-items:end; margin-top:28px; padding:18px; background:var(--paper); border:1px solid var(--line); border-radius:18px; box-shadow:0 14px 35px #1e40af12; }
+    label { display:block; flex:1; color:var(--ink); font-size:14px; font-weight:600; }
+    input { display:block; width:100%; margin-top:7px; padding:12px 14px; color:var(--ink); background:#fbfdff; border:1px solid #b8c9e1; border-radius:10px; outline:none; }
+    input:focus { border-color:var(--blue); box-shadow:0 0 0 3px #2563eb24; }
+    .primary,.ghost { min-height:48px; padding:0 20px; border-radius:10px; font-weight:600; transition:transform .2s,box-shadow .2s,background .2s; }
+    .primary { color:#fff; background:var(--blue); border:1px solid var(--blue); box-shadow:0 8px 18px #2563eb2c; }
+    .primary:hover { background:var(--blue-dark); transform:translateY(-1px); }
+    .ghost { color:var(--blue-dark); background:#fff; border:1px solid #b8c9e1; }
+    .ghost:hover { background:var(--wash); }
+    button:disabled { cursor:wait; opacity:.55; }
+    .section-head { display:flex; justify-content:space-between; align-items:center; margin:28px 0 12px; }
+    h2 { margin:0; font-size:20px; }
+    .count { color:var(--muted); font-size:14px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; }
+    .card { padding:18px; background:#fff; border:1px solid var(--line); border-radius:16px; box-shadow:0 8px 24px #1720330a; animation:rise .3s ease both; }
+    .card-top { display:flex; justify-content:space-between; gap:12px; align-items:start; }
+    .waybill { font-size:18px; font-weight:700; letter-spacing:.03em; }
+    .badge { padding:3px 9px; border-radius:999px; color:var(--blue-dark); background:#dbeafe; font-size:12px; white-space:nowrap; }
+    .badge.done { color:#166534; background:#dcfce7; }
+    .meta { margin:13px 0 0; color:var(--muted); font-size:14px; }
+    .meta strong { color:var(--ink); font-weight:600; }
+    .card-actions { display:flex; justify-content:flex-end; margin-top:14px; }
+    .remove { color:var(--red); background:transparent; border:0; font-size:13px; }
+    .empty { grid-column:1/-1; padding:34px 18px; color:var(--muted); text-align:center; border:1px dashed #b8c9e1; border-radius:16px; }
+    .notice { min-height:24px; margin-top:12px; color:var(--muted); font-size:14px; }
+    .notice.error { color:var(--red); }
+    footer { margin-top:42px; color:var(--muted); font-size:13px; }
+    @keyframes rise { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:none; } }
+    @media (max-width:620px) { .shell { width:min(100% - 22px,540px); padding-top:18px; } header { margin-bottom:34px; } .add-card { display:block; } .primary { width:100%; margin-top:10px; } .status-pill { font-size:12px; } }
+    @media (prefers-reduced-motion:reduce) { *,*:before,*:after { animation-duration:.01ms!important; transition-duration:.01ms!important; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="brand"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h11v10H3zM14 10h4l3 3v4h-7zM7 17a2 2 0 1 0 0 0m10 0a2 2 0 1 0 0 0"/></svg></span><span>Courier Pulse</span></div>
+      <div class="status-pill"><span class="dot" aria-hidden="true"></span>本机监控已连接</div>
+    </header>
+    <section class="hero" aria-labelledby="title">
+      <h1 id="title">只在该提醒时提醒。</h1>
+      <p class="lede">运单在路上时保持安静；到达目的网点后提高警戒，出现“派送中”并识别到快递员姓名时通知你。</p>
+      <form class="add-card" id="add-form">
+        <label for="waybills">添加运单号 <span style="font-weight:400;color:var(--muted)">（多个用空格或逗号）</span><input id="waybills" name="waybills" autocomplete="off" placeholder="例如 KY4000000000001" required></label>
+        <button class="primary" type="submit">开始追踪</button>
+      </form>
+      <div class="notice" id="notice" role="status" aria-live="polite"></div>
+    </section>
+    <section aria-labelledby="active-title">
+      <div class="section-head"><h2 id="active-title">正在追踪</h2><span class="count" id="active-count"></span></div>
+      <div class="grid" id="active-grid"></div>
+    </section>
+    <section aria-labelledby="done-title">
+      <div class="section-head"><h2 id="done-title">已完成</h2><span class="count" id="done-count"></span></div>
+      <div class="grid" id="done-grid"></div>
+    </section>
+    <footer>数据保存在本机。浏览器只连接 127.0.0.1，不会看到 AppSecret、平台标识或监控令牌。</footer>
+  </main>
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const notice = $('#notice');
+    function showNotice(text, error = false) { notice.textContent = text || ''; notice.className = error ? 'notice error' : 'notice'; }
+    function parseWaybills(value) { return [...new Set(value.trim().toUpperCase().replaceAll('，', ' ').split(/[\s,]+/).filter(Boolean))]; }
+    function fmt(value) { return value ? String(value) : '暂无节点记录'; }
+    function esc(value) { return String(value).replace(/[&<>\"']/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '\"':'&quot;', "'":'&#39;' }[char])); }
+    function card(item, done) {
+      const wrapper = document.createElement('article'); wrapper.className = 'card';
+      const status = done ? (item.status === 'completed' ? '已签收' : '已停止') : (item.last_status === 'out_for_delivery' ? '派送中' : '监控中');
+      wrapper.innerHTML = `<div class="card-top"><div class="waybill"></div><span class="badge ${item.status === 'completed' ? 'done' : ''}">${esc(status)}</span></div><div class="meta"><strong>最近节点：</strong>${esc(fmt(item.last_event_text))}</div><div class="meta"><strong>快递员：</strong>${esc(fmt(item.courier_name))}</div><div class="meta"><strong>预计送达：</strong>${esc(fmt(item.profile?.expected_delivery_time))}</div>${done ? '' : '<div class="card-actions"><button class="remove" type="button">停止追踪</button></div>'}`;
+      wrapper.querySelector('.waybill').textContent = item.waybill;
+      if (!done) wrapper.querySelector('.remove').addEventListener('click', () => removeWaybill(item.waybill));
+      return wrapper;
+    }
+    async function load() {
+      const response = await fetch('/api/watchlist', { cache:'no-store' });
+      const state = await response.json(); if (!response.ok) throw new Error(state.error || '读取清单失败');
+      const items = Object.values(state.shipments || {}); const active = items.filter(item => item.status === 'active'); const done = items.filter(item => item.status !== 'active');
+      $('#active-grid').replaceChildren(...(active.length ? active.map(item => card(item, false)) : [Object.assign(document.createElement('div'), { className:'empty', textContent:'还没有正在追踪的运单' })]));
+      $('#done-grid').replaceChildren(...(done.length ? done.map(item => card(item, true)) : [Object.assign(document.createElement('div'), { className:'empty', textContent:'签收完成的运单会出现在这里' })]));
+      $('#active-count').textContent = `${active.length} 票`; $('#done-count').textContent = `${done.length} 票`;
+    }
+    async function submit(path, waybills) { const response = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({waybills}) }); const data = await response.json(); if (!data.ok) throw new Error(data.error || data.output || data.error || '操作失败'); return data; }
+    $('#add-form').addEventListener('submit', async (event) => { event.preventDefault(); const waybills = parseWaybills($('#waybills').value); if (!waybills.length) return; const button = event.target.querySelector('button'); button.disabled = true; showNotice('正在查询并订阅，请稍候…'); try { await submit('/api/add', waybills); $('#waybills').value = ''; showNotice('已查询并订阅，开始追踪。'); await load(); } catch (error) { showNotice(error.message, true); } finally { button.disabled = false; } });
+    async function removeWaybill(waybill) { if (!confirm(`确定停止追踪 ${waybill} 吗？`)) return; showNotice('正在更新清单…'); try { await submit('/api/remove', [waybill]); showNotice('已从本机清单移除。'); await load(); } catch (error) { showNotice(error.message, true); } }
+    load().catch(error => showNotice(error.message, true));
+    setInterval(() => load().catch(() => {}), 60000);
+  </script>
+</body>
+</html>
