@@ -182,7 +182,11 @@ function watchlistCoordinator(env) {
 async function managementRateLimit(request, env, routeGroup) {
   if (!env.APP_RATE_LIMITER || typeof env.APP_RATE_LIMITER.limit !== "function") return null;
   const authorization = request.headers.get("authorization") ?? "";
-  const validToken = routeGroup === "events" ? authorized(request, env) : appAuthorized(request, env);
+  const validToken = routeGroup === "events"
+    ? authorized(request, env)
+    : routeGroup === "health"
+      ? (appAuthorized(request, env) || authorized(request, env))
+      : appAuthorized(request, env);
   const actor = validToken
     ? `token:${md5Hex(authorization)}`
     : `unauthorized:${md5Hex(request.headers.get("cf-connecting-ip") || "unknown")}`;

@@ -141,6 +141,31 @@ test("health capabilities need a valid token and an invalid one reveals nothing"
   assert.equal(guessedPayload.capabilities, undefined, "a wrong token must look like an anonymous probe");
 });
 
+test("a valid MONITOR_TOKEN is metered under its own key, not the shared anonymous one", async () => {
+  const monitorToken = "m".repeat(32);
+  const keys = [];
+  const env = {
+    APP_ACCESS_TOKEN: APP_TOKEN,
+    MONITOR_TOKEN: monitorToken,
+    KYE_WATCHLIST: new MemoryKv(),
+    APP_RATE_LIMITER: { async limit({ key }) { keys.push(key); return { success: true }; } },
+  };
+  const response = await handleRequest(new Request("https://example.test/health", {
+    headers: { authorization: `Bearer ${monitorToken}`, "cf-connecting-ip": "203.0.113.7" },
+  }), env);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).capabilities.watchlist_storage, "kv");
+  assert.equal(keys.length, 1);
+  assert.match(keys[0], /^health:token:/, "a credential the route accepts must key its own bucket");
+
+  // A wrong token from the same egress address must not land in that bucket.
+  await handleRequest(new Request("https://example.test/health", {
+    headers: { authorization: `Bearer ${"z".repeat(32)}`, "cf-connecting-ip": "203.0.113.7" },
+  }), env);
+  assert.match(keys[1], /^health:unauthorized:/);
+  assert.notEqual(keys[0], keys[1]);
+});
+
 test("a credentialed health probe is metered while an anonymous one stays free", async () => {
   const keys = [];
   const env = {
