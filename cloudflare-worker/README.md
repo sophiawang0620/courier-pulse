@@ -6,7 +6,7 @@ Endpoints:
 
 - `POST /kye/callback/sandbox`: KYE sandbox PushRoute callback.
 - `POST /kye/callback/prod`: KYE production PushRoute callback.
-- `GET /health`: public health check without shipment data.
+- `GET /health`: public health check without shipment data. Deployment capabilities are returned only for a request carrying a valid `APP_ACCESS_TOKEN` or `MONITOR_TOKEN`; a credentialed probe is rate limited so the endpoint cannot be used to test guessed tokens.
 - `GET /events`: authenticated event retrieval.
 - `POST /events/ack`: authenticated deletion after successful notification.
 

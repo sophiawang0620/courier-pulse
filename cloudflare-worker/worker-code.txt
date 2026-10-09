@@ -1007,18 +1007,27 @@ export async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
   if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/app")) return new Response(APP_HTML, { headers: APP_HEADERS });
   if (request.method === "GET" && url.pathname === "/health") {
-    return jsonResponse({
+    const body = {
       ok: true,
       service: "courier-pulse",
       version: WORKER_VERSION,
       notification_mode: notificationMode(env),
-      capabilities: {
-        watchlist_storage: env.WATCHLIST_COORDINATOR ? "durable_object" : (env.KYE_WATCHLIST ? "kv" : "unconfigured"),
-        rate_limiting: Boolean(env.APP_RATE_LIMITER),
-        bark: Boolean(env.BARK_DEVICE_KEY),
-        telegram: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID),
-      },
-    });
+    };
+    // An unauthenticated liveness probe stays free; a credentialed one is metered so that
+    // /health cannot be used as an unlimited oracle for guessing the management tokens.
+    if (request.headers.get("authorization")) {
+      const limited = await managementRateLimit(request, env, "health");
+      if (limited) return limited;
+      if (appAuthorized(request, env) || authorized(request, env)) {
+        body.capabilities = {
+          watchlist_storage: env.WATCHLIST_COORDINATOR ? "durable_object" : (env.KYE_WATCHLIST ? "kv" : "unconfigured"),
+          rate_limiting: Boolean(env.APP_RATE_LIMITER),
+          bark: Boolean(env.BARK_DEVICE_KEY),
+          telegram: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID),
+        };
+      }
+    }
+    return jsonResponse(body);
   }
   if (request.method === "POST" && url.pathname === "/kye/callback/sandbox") {
     return receivePush(request, env, "sandbox", ctx);

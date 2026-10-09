@@ -112,7 +112,7 @@ pnpm exec wrangler deploy
 
 仓库将 Wrangler 固定在 lockfile 记录的版本；请勿删除 lockfile 后直接拉取未经验证的最新版。
 
-访问 https://你的-Worker-域名/health，应返回 ok: true，并在 capabilities 中看到 watchlist_storage: durable_object 与 rate_limiting: true。手机访问根地址或 /app，输入 APP_ACCESS_TOKEN 后即可管理运单。
+访问 https://你的-Worker-域名/health，应返回 ok: true。带上 `Authorization: Bearer <APP_ACCESS_TOKEN>` 再访问同一地址，才会额外返回 capabilities，应能看到 watchlist_storage: durable_object 与 rate_limiting: true；不带访问码的健康检查不会暴露这些部署细节。手机访问根地址或 /app，输入 APP_ACCESS_TOKEN 后即可管理运单。
 
 从旧版升级时无需手工搬运：Durable Object 第一次收到请求会从 `KYE_WATCHLIST` 导入现有清单，之后每次更新仍镜像回 KV，便于回退。不要在升级部署前删除原有 KV 绑定或 namespace。
 
