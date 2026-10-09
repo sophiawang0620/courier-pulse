@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import vm from "node:vm";
 
-import { handleRequest, md5Hex, scheduledMonitor, verifyKyeSignature } from "../src/worker.js";
+import { handleRequest, md5Hex, scheduledMonitor, verifyKyeSignature, WatchlistCoordinator } from "../src/worker.js";
 
 const APP_TOKEN = "a".repeat(32);
 const MONITOR_TOKEN = "m".repeat(32);
@@ -33,6 +33,12 @@ class MemoryKv {
 
   async delete(key) {
     this.values.delete(key);
+  }
+}
+
+class MemoryDurableContext {
+  constructor() {
+    this.storage = new MemoryKv();
   }
 }
 
@@ -109,8 +115,105 @@ test("health endpoint identifies the deployed notification build", async () => {
   const payload = await response.json();
   assert.equal(response.status, 200);
   assert.equal(payload.service, "courier-pulse");
-  assert.equal(payload.version, "2026-10-09-review-remediation-v2");
+  assert.equal(payload.version, "0.2.0-platform-hardening");
   assert.equal(payload.notification_mode, "all_nodes");
+  assert.deepEqual(payload.capabilities, {
+    watchlist_storage: "unconfigured",
+    rate_limiting: false,
+    bark: false,
+    telegram: false,
+  });
+});
+
+test("management APIs return 429 when the optional rate limiter rejects a request", async () => {
+  const keys = [];
+  const response = await handleRequest(new Request("https://example.test/api/watchlist", {
+    headers: { authorization: `Bearer ${APP_TOKEN}`, "cf-connecting-ip": "203.0.113.1" },
+  }), {
+    APP_ACCESS_TOKEN: APP_TOKEN,
+    KYE_WATCHLIST: new MemoryKv(),
+    APP_RATE_LIMITER: { limit: async ({ key }) => { keys.push(key); return { success: false }; } },
+  });
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("retry-after"), "60");
+  assert.equal(keys.length, 1);
+  assert.match(keys[0], /^watchlist:token:[a-f0-9]{32}$/);
+  assert.doesNotMatch(keys[0], new RegExp(APP_TOKEN));
+});
+
+test("unauthorized rate-limit keys do not change when an attacker rotates guessed tokens", async () => {
+  const keys = [];
+  const env = {
+    APP_ACCESS_TOKEN: APP_TOKEN,
+    KYE_WATCHLIST: new MemoryKv(),
+    APP_RATE_LIMITER: { limit: async ({ key }) => { keys.push(key); return { success: true }; } },
+  };
+  for (const guess of ["wrong-token-one", "wrong-token-two"]) {
+    const response = await handleRequest(new Request("https://example.test/api/watchlist", {
+      headers: { authorization: `Bearer ${guess}`, "cf-connecting-ip": "203.0.113.1" },
+    }), env);
+    assert.equal(response.status, 401);
+  }
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], keys[1]);
+  assert.match(keys[0], /^watchlist:unauthorized:[a-f0-9]{32}$/);
+});
+
+test("Durable Object migrates KV and serializes concurrent watchlist mutations", async () => {
+  const mirror = new MemoryKv();
+  await mirror.put("watchlist:v1", JSON.stringify({
+    version: 1,
+    shipments: {
+      KY4000000000001: activeShipment("KY4000000000001"),
+      KY4000000000002: activeShipment("KY4000000000002"),
+    },
+    pending_notifications: [],
+  }));
+  const coordinator = new WatchlistCoordinator(new MemoryDurableContext(), {
+    APP_ACCESS_TOKEN: APP_TOKEN,
+    KYE_WATCHLIST: mirror,
+  });
+  const stop = (waybill) => coordinator.fetch(new Request("https://example.test/api/watchlist/remove", {
+    method: "POST",
+    headers: { authorization: `Bearer ${APP_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ waybills: [waybill] }),
+  }));
+  const responses = await Promise.all([stop("KY4000000000001"), stop("KY4000000000002")]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+
+  const read = await coordinator.fetch(new Request("https://example.test/api/watchlist", {
+    headers: { authorization: `Bearer ${APP_TOKEN}` },
+  }));
+  const state = await read.json();
+  assert.equal(state.shipments.KY4000000000001.status, "stopped");
+  assert.equal(state.shipments.KY4000000000002.status, "stopped");
+  const mirrored = await mirror.get("watchlist:v1", "json");
+  assert.equal(mirrored.shipments.KY4000000000001.status, "stopped");
+  assert.equal(mirrored.shipments.KY4000000000002.status, "stopped");
+});
+
+test("Durable Object remains authoritative when the optional KV mirror write fails", async () => {
+  const mirror = new MemoryKv();
+  await mirror.put("watchlist:v1", JSON.stringify({
+    version: 1,
+    shipments: { KY4000000000001: activeShipment("KY4000000000001") },
+    pending_notifications: [],
+  }));
+  mirror.put = async () => { throw new Error("KV write rate limited"); };
+  const coordinator = new WatchlistCoordinator(new MemoryDurableContext(), {
+    APP_ACCESS_TOKEN: APP_TOKEN,
+    KYE_WATCHLIST: mirror,
+  });
+  const response = await coordinator.fetch(new Request("https://example.test/api/watchlist/remove", {
+    method: "POST",
+    headers: { authorization: `Bearer ${APP_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ waybills: ["KY4000000000001"] }),
+  }));
+  assert.equal(response.status, 200);
+  const read = await coordinator.fetch(new Request("https://example.test/api/watchlist", {
+    headers: { authorization: `Bearer ${APP_TOKEN}` },
+  }));
+  assert.equal((await read.json()).shipments.KY4000000000001.status, "stopped");
 });
 
 test("watchlist API migrates legacy full addresses to destination region names", async () => {
