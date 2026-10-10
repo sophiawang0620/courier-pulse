@@ -8,6 +8,9 @@
 
 ## 功能
 
+- 多快递适配器框架：调度、去重、通知只处理统一事件结构，接入新快递只需写一个适配器（见[快递适配器](docs/carrier-adapters.md)）
+- 内置跨越速运适配器，以及可供任意物流系统接入的通用 Webhook 适配器
+- 手机网页可选择快递公司或自动识别
 - 手机网页管理云端运单清单
 - 接收并验签跨越 PushRoute 回调
 - 以 Cloudflare Cron 主动调用 queryRoute 作为回调缺失时的保障
@@ -72,7 +75,7 @@ pnpm exec wrangler secret put KYE_PROD_PLATFORM_FLAG
 pnpm exec wrangler secret put APP_ACCESS_TOKEN
 ~~~
 
-如果使用沙盒回调，再配置 KYE_SANDBOX_PLATFORM_FLAG；如果使用本地事件消费者，再配置 MONITOR_TOKEN。APP_ACCESS_TOKEN 是手机网页的访问码；MONITOR_TOKEN 只供本地消费者读取。两者必须使用不同的随机值，且至少 32 个字符；Worker 会拒绝使用过短访问码的管理请求。不要把任何 secret 写进配置、源码、Issue 或聊天记录。
+如果要启用通用 Webhook 适配器，再配置 GENERIC_WEBHOOK_SECRET（至少 32 个字符，用法见[快递适配器](docs/carrier-adapters.md)）。如果使用沙盒回调，再配置 KYE_SANDBOX_PLATFORM_FLAG；如果使用本地事件消费者，再配置 MONITOR_TOKEN。APP_ACCESS_TOKEN 是手机网页的访问码；MONITOR_TOKEN 只供本地消费者读取。两者必须使用不同的随机值，且至少 32 个字符；Worker 会拒绝使用过短访问码的管理请求。不要把任何 secret 写进配置、源码、Issue 或聊天记录。
 
 通知渠道至少配置一种。配置 Bark：
 

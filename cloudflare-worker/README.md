@@ -6,6 +6,8 @@ Endpoints:
 
 - `POST /kye/callback/sandbox`: KYE sandbox PushRoute callback.
 - `POST /kye/callback/prod`: KYE production PushRoute callback.
+- `POST /carrier/<id>/callback` and `/carrier/<id>/callback/sandbox`: carrier callbacks for any installed adapter. `/kye/callback/prod` and `/kye/callback/sandbox` remain as aliases.
+- `GET /api/carriers`: authenticated list of installed adapters and their capabilities.
 - `GET /health`: public health check without shipment data. Deployment capabilities are returned only for a request carrying a valid `APP_ACCESS_TOKEN` or `MONITOR_TOKEN`; a credentialed probe is rate limited so the endpoint cannot be used to test guessed tokens.
 - `GET /events`: authenticated event retrieval.
 - `POST /events/ack`: authenticated deletion after successful notification.
@@ -19,6 +21,7 @@ Required bindings and secrets:
 - Secret `KYE_SANDBOX_PLATFORM_FLAG` (optional when the sandbox callback is unused).
 - Secret `KYE_PROD_PLATFORM_FLAG`.
 - Secret `MONITOR_TOKEN` (optional; required only for the local `/events` consumer). When configured, it must contain at least 32 characters.
+- Secret `GENERIC_WEBHOOK_SECRET` (optional; enables the generic webhook adapter, at least 32 characters).
 - Secret `APP_ACCESS_TOKEN` for the phone web page and watchlist API. It must contain at least 32 characters; shorter configured values are rejected.
 - Optional plain-text variable `NOTIFICATION_MODE`. Omit it, or set it to `all_nodes`, while testing so every newly discovered route node is notified. Set it to `critical_only` after the system is stable to notify only pickup assignment and out-for-delivery events that include a courier name.
 - Secrets `KYE_APP_KEY`, `KYE_APP_SECRET`, and `KYE_CUSTOMER_CODE` for cloud query/subscribe.
