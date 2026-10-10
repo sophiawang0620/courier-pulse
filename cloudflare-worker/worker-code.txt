@@ -20,6 +20,17 @@ const GENERIC_CARRIER_ID = "generic";
 const CARRIER_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const GENERIC_WAYBILL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{3,63}$/;
 const MAX_CALLBACK_EVENTS = 100;
+// Stages an adapter may declare directly. Chinese keyword matching is only the
+// fallback for carriers whose feed has no structured status of its own.
+const DECLARED_STAGES = {
+  pending: { status: "pending" },
+  pickup_assigned: { status: "other", pickupAssigned: true },
+  collected: { status: "other", early: true },
+  in_transit: { status: "other", transit: true },
+  at_destination: { status: "other", destination: true },
+  out_for_delivery: { status: "out_for_delivery", dispatch: true },
+  delivered: { status: "delivered", delivered: true },
+};
 const APP_TOKEN_MIN_LENGTH = 32;
 const CALLBACK_MAX_SKEW_MS = 5 * 60 * 1000;
 const HISTORY_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
@@ -340,18 +351,28 @@ function walk(value, callback) {
 
 function clean(value) { return value === null || value === undefined ? "" : String(value).trim(); }
 
-function classifyEvent(waybill, textValue, timeValue, courierValue, carrier = KYE_CARRIER_ID, locationValue = "") {
+function classifyEvent(waybill, textValue, timeValue, courierValue, carrier = KYE_CARRIER_ID, locationValue = "", declaredStage = "") {
   const text = clean(textValue);
   const time = clean(timeValue);
   const courier = clean(courierValue);
   const location = clean(locationValue);
-  const delivered = DELIVERED_WORDS.some((word) => text.includes(word));
-  const dispatch = !delivered && DISPATCH_WORDS.some((word) => text.includes(word));
-  const destination = DESTINATION_WORDS.some((word) => text.includes(word));
-  const transit = TRANSIT_WORDS.some((word) => text.includes(word));
-  const early = EARLY_WORDS.some((word) => text.includes(word));
-  const pickupAssigned = !early && PICKUP_ASSIGNED_WORDS.some((word) => text.includes(word));
-  const status = delivered ? "delivered" : dispatch ? "out_for_delivery" : "other";
+  const declared = DECLARED_STAGES[clean(declaredStage).toLowerCase()] ?? null;
+  const keywords = {
+    delivered: DELIVERED_WORDS.some((word) => text.includes(word)),
+    destination: DESTINATION_WORDS.some((word) => text.includes(word)),
+    transit: TRANSIT_WORDS.some((word) => text.includes(word)),
+    early: EARLY_WORDS.some((word) => text.includes(word)),
+  };
+  keywords.dispatch = !keywords.delivered && DISPATCH_WORDS.some((word) => text.includes(word));
+  keywords.pickupAssigned = !keywords.early && PICKUP_ASSIGNED_WORDS.some((word) => text.includes(word));
+  const stage = declared ?? keywords;
+  const delivered = stage.delivered === true;
+  const dispatch = stage.dispatch === true;
+  const destination = stage.destination === true;
+  const transit = stage.transit === true;
+  const early = stage.early === true;
+  const pickupAssigned = stage.pickupAssigned === true;
+  const status = declared ? declared.status : (delivered ? "delivered" : dispatch ? "out_for_delivery" : "other");
   // The fingerprint includes the carrier so two carriers cannot collide on one waybill number.
   const fingerprint = md5Hex(JSON.stringify({ carrier, waybill, time, text, courier, location }));
   const interval = dispatch || destination ? 15 : transit ? 240 : pickupAssigned ? 30 : early ? 480 : 60;
@@ -452,13 +473,6 @@ function applyDestinationRegion(result, profile) {
   return destination ? { ...result, destination: true, interval: 15 } : result;
 }
 
-function classifyPushItem(item) {
-  const waybill = clean(item?.mailno).toUpperCase();
-  const text = [item?.step, item?.desc ?? item?.eventText ?? item?.status].map(clean).filter(Boolean).join(" | ");
-  const time = item?.time ?? item?.eventTime ?? item?.event_time;
-  const courier = item?.deliveryName ?? item?.courierName ?? item?.delivery_name;
-  return classifyEvent(waybill, text, time, courier, KYE_CARRIER_ID);
-}
 
 function minimizePushPayload(payload) {
   return payload.map((item) => ({
@@ -578,22 +592,39 @@ function escapeTelegramHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
-function telegramMessage(environment, payload) {
-  const lines = [`<b>Courier Pulse · KYE（${escapeTelegramHtml(environment)}）</b>`];
+function notificationItemLabel(item) {
+  return item.carrier_label ?? carrierAdapter(item.carrier)?.label ?? "";
+}
+
+// The title names whichever carriers the batch actually came from. Fields are read
+// under their neutral names first, with the legacy ones kept so notifications left
+// in the outbox by an earlier release still render.
+function notificationTitle(payload, environmentLabel = "") {
+  const labels = [...new Set(payload.map(notificationItemLabel).filter(Boolean))];
+  const carriers = !labels.length
+    ? "物流更新"
+    : labels.length === 1 ? labels[0] : `${labels[0]} 等 ${labels.length} 家`;
+  return environmentLabel ? `${carriers}（${environmentLabel}）` : carriers;
+}
+
+function telegramMessage(payload, environmentLabel = "") {
+  const lines = [`<b>Courier Pulse · ${escapeTelegramHtml(notificationTitle(payload, environmentLabel))}</b>`];
   for (const item of payload) {
-    const waybill = escapeTelegramHtml(item.mailno);
-    const event = escapeTelegramHtml(item.desc ?? item.eventText ?? item.status ?? "有新的物流事件");
-    const time = escapeTelegramHtml(item.time ?? item.eventTime ?? "");
-    const courier = escapeTelegramHtml(item.deliveryName ?? item.courierName ?? "");
-    const carrier = escapeTelegramHtml(item.carrier_label ?? carrierAdapter(item.carrier)?.label ?? "");
+    const waybill = escapeTelegramHtml(item.waybill ?? item.mailno ?? "");
+    const event = escapeTelegramHtml(item.event_text ?? item.desc ?? item.eventText ?? "有新的物流事件");
+    const time = escapeTelegramHtml(item.event_time ?? item.time ?? item.eventTime ?? "");
+    const courier = escapeTelegramHtml(item.courier_name ?? item.deliveryName ?? item.courierName ?? "");
+    const location = escapeTelegramHtml(item.location ?? "");
+    const carrier = escapeTelegramHtml(notificationItemLabel(item));
     lines.push(`\n<b>${carrier ? `${carrier} ` : ""}${waybill}</b>：${event}`);
+    if (location) lines.push(`位置：${location}`);
     if (time) lines.push(`时间：${time}`);
     if (courier) lines.push(`快递员：${courier}`);
   }
   return lines.join("\n").slice(0, 4096);
 }
 
-async function sendTelegramUpdate(env, environment, payload) {
+async function sendTelegramUpdate(env, payload, environmentLabel = "") {
   const token = typeof env.TELEGRAM_BOT_TOKEN === "string" ? env.TELEGRAM_BOT_TOKEN.trim() : "";
   const chatId = typeof env.TELEGRAM_CHAT_ID === "string" ? env.TELEGRAM_CHAT_ID.trim() : "";
   if (!token || !chatId) return;
@@ -601,14 +632,14 @@ async function sendTelegramUpdate(env, environment, payload) {
   const response = await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text: telegramMessage(environment, payload), parse_mode: "HTML" }),
+    body: JSON.stringify({ chat_id: chatId, text: telegramMessage(payload, environmentLabel), parse_mode: "HTML" }),
   });
   if (!response.ok) {
     throw new Error(`Telegram notification failed with HTTP ${response.status}`);
   }
 }
 
-async function sendBarkUpdate(env, environment, payload) {
+async function sendBarkUpdate(env, payload, environmentLabel = "") {
   const deviceKey = typeof env.BARK_DEVICE_KEY === "string" ? env.BARK_DEVICE_KEY.trim() : "";
   if (!deviceKey) return;
   const server = typeof env.BARK_SERVER_URL === "string" && env.BARK_SERVER_URL.trim()
@@ -619,8 +650,8 @@ async function sendBarkUpdate(env, environment, payload) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       device_key: deviceKey,
-      title: "物流更新 · KYE",
-      body: telegramMessage(environment, payload).replace(/<[^>]+>/g, ""),
+      title: `物流更新 · ${notificationTitle(payload, environmentLabel)}`,
+      body: telegramMessage(payload, environmentLabel).replace(/<[^>]+>/g, ""),
       group: "courier-pulse",
     }),
   });
@@ -658,10 +689,10 @@ function enqueueNotifications(state, payload, now = new Date()) {
     .slice(-MAX_PENDING_NOTIFICATIONS);
 }
 
-async function sendNotifications(env, environment, payload) {
+async function sendNotifications(env, payload, environmentLabel = "") {
   if (!payload.length) return;
-  if (env.BARK_DEVICE_KEY) await sendBarkUpdate(env, environment, payload);
-  else await sendTelegramUpdate(env, environment, payload);
+  if (env.BARK_DEVICE_KEY) await sendBarkUpdate(env, payload, environmentLabel);
+  else await sendTelegramUpdate(env, payload, environmentLabel);
 }
 
 async function markCallbackVerifiedDirect(env, carrierId, payload, pendingNotifications = []) {
@@ -672,7 +703,7 @@ async function markCallbackVerifiedDirect(env, carrierId, payload, pendingNotifi
   let changed = false;
   const now = new Date().toISOString();
   for (const item of payload) {
-    const waybill = adapter.normalizeWaybill(item?.mailno);
+    const waybill = adapter.normalizeWaybill(item?.waybill);
     const shipment = state.shipments[shipmentKey(adapter.id, waybill)];
     if (!shipment || shipment.status !== "active") continue;
     const result = applyDestinationRegion(callbackEvent(adapter, item), shipment.profile);
@@ -744,9 +775,16 @@ async function receivePush(request, env, adapter, environment, ctx) {
   const existing = await Promise.all(candidates.map(({ key }) => env.KYE_EVENTS.get(key)));
   const fresh = candidates.filter((_, index) => !existing[index]);
   const receivedAt = new Date().toISOString();
-  await Promise.all(fresh.map(({ raw, key }) => env.KYE_EVENTS.put(
+  await Promise.all(fresh.map(({ record, key }) => env.KYE_EVENTS.put(
     key,
-    JSON.stringify({ key, carrier: adapter.id, environment, receivedAt, payload: [raw] }),
+    JSON.stringify({
+      key,
+      carrier: adapter.id,
+      environment,
+      receivedAt,
+      event: record,
+      payload: [legacyEventPayload(record)],
+    }),
     { expirationTtl: 60 * 60 * 24 * 14 },
   )));
 
@@ -754,15 +792,15 @@ async function receivePush(request, env, adapter, environment, ctx) {
     ctx.waitUntil((async () => {
       const notifyPayload = fresh
         .filter((entry) => shouldNotifyClassification(env, entry.event))
-        .map((entry) => ({ ...entry.raw, carrier: adapter.id, carrier_label: adapter.label }));
+        .map((entry) => ({ ...entry.record, carrier: adapter.id, carrier_label: adapter.label }));
       let pendingNotifications = [];
       try {
-        await sendNotifications(env, `${adapter.label}·${environment}`, notifyPayload);
+        await sendNotifications(env, notifyPayload, environment);
       } catch (error) {
         pendingNotifications = notifyPayload;
         logError("push notification failed", error);
       }
-      await markCallbackVerified(env, adapter.id, fresh.map((entry) => entry.raw), pendingNotifications);
+      await markCallbackVerified(env, adapter.id, fresh.map((entry) => entry.record), pendingNotifications);
     })().catch((error) => logError("callback processing failed", error)));
   }
   return jsonResponse({ code: "0", msg: "success" });
@@ -853,14 +891,42 @@ async function hmacSha256Hex(secret, message) {
   return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function callbackEvent(adapter, raw) {
-  const text = [raw?.step, raw?.desc].map(clean).filter(Boolean).join(" | ");
-  const event = classifyEvent(clean(raw?.mailno), text, raw?.time, raw?.deliveryName, adapter.id, raw?.location);
-  if (raw?.delivered === true && event.status !== "delivered") {
-    event.status = "delivered";
-    event.delivered = true;
-  }
-  return event;
+// An adapter hands back this neutral record; nothing downstream reads a provider's
+// own field names. carrierEvent is the single derivation used both when a callback
+// arrives and when the coordinator re-reads it, so fingerprints agree by construction.
+function carrierRecord({ waybill, status = "", event_text = "", event_time = "", location = "", courier_name = "" }) {
+  return {
+    waybill: clean(waybill),
+    status: clean(status),
+    event_text: clean(event_text),
+    event_time: clean(event_time),
+    location: clean(location),
+    courier_name: clean(courier_name),
+  };
+}
+
+function callbackEvent(adapter, record) {
+  return classifyEvent(
+    adapter.normalizeWaybill(record?.waybill),
+    record?.event_text,
+    record?.event_time,
+    record?.courier_name,
+    adapter.id,
+    record?.location,
+    record?.status,
+  );
+}
+
+// Stored events keep the field names the KYE-era local consumer reads, so
+// scripts/cloud_monitor.py keeps working against this Worker.
+function legacyEventPayload(record) {
+  return {
+    mailno: record.waybill,
+    step: "",
+    desc: record.event_text,
+    time: record.event_time,
+    deliveryName: record.courier_name,
+  };
 }
 
 const KYE_ADAPTER = {
@@ -904,7 +970,16 @@ const KYE_ADAPTER = {
 
   normalizeCallback(payload) {
     if (!validatePushPayload(payload)) return null;
-    return minimizePushPayload(payload).map((raw) => ({ raw, event: callbackEvent(KYE_ADAPTER, raw) }));
+    return minimizePushPayload(payload).map((item) => {
+      // KYE has no structured status of its own, so its stage stays keyword-derived.
+      const record = carrierRecord({
+        waybill: item.mailno,
+        event_text: [item.step, item.desc].map(clean).filter(Boolean).join(" | "),
+        event_time: item.time,
+        courier_name: item.deliveryName,
+      });
+      return { record, event: callbackEvent(KYE_ADAPTER, record) };
+    });
   },
 };
 
@@ -947,17 +1022,17 @@ const GENERIC_ADAPTER = {
       if (!item || typeof item !== "object") return null;
       const waybill = GENERIC_ADAPTER.normalizeWaybill(item.waybill);
       if (!GENERIC_WAYBILL_PATTERN.test(waybill)) return null;
-      const raw = {
-        mailno: waybill,
-        step: clean(item.status),
-        desc: clean(item.event_text),
-        time: clean(item.event_time),
-        deliveryName: clean(item.courier_name),
-        location: clean(item.location),
-        // An explicit flag wins over the Chinese keyword heuristics.
-        delivered: item.delivered === true,
-      };
-      normalized.push({ raw, event: callbackEvent(GENERIC_ADAPTER, raw) });
+      // delivered:true is shorthand for the delivered stage and wins over any other status.
+      const record = carrierRecord({
+        waybill,
+        status: item.delivered === true ? "delivered" : item.status,
+        event_text: item.event_text,
+        event_time: item.event_time,
+        location: item.location,
+        courier_name: item.courier_name,
+      });
+      if (record.status && !DECLARED_STAGES[record.status.toLowerCase()]) return null;
+      normalized.push({ record, event: callbackEvent(GENERIC_ADAPTER, record) });
     }
     return normalized;
   },
@@ -1308,10 +1383,11 @@ async function pollCarrier(env, group, now, notifications) {
       notifications.push({
         carrier: adapter.id,
         carrier_label: adapter.label,
-        mailno: result.waybill,
-        desc: result.event_text,
-        time: result.event_time,
-        deliveryName: result.courier_name,
+        waybill: result.waybill,
+        event_text: result.event_text,
+        event_time: result.event_time,
+        location: result.location,
+        courier_name: result.courier_name,
         event_fingerprint: result.event_fingerprint,
       });
     }
@@ -1330,7 +1406,7 @@ async function scheduledMonitorDirect(env) {
   }
   if (notifications.length) {
     try {
-      await sendNotifications(env, "主动查询", notifications);
+      await sendNotifications(env, notifications, "主动查询");
       state.pending_notifications = [];
     } catch (error) {
       enqueueNotifications(state, notifications);

@@ -994,7 +994,8 @@ test("callback queues a failed notification even when the shipment is not in the
     const state = await watchlistKv.get("watchlist:v1", "json");
     assert.equal(response.status, 200);
     assert.equal(state.pending_notifications.length, 1);
-    assert.equal(state.pending_notifications[0].mailno, "KY4000000000001");
+    assert.equal(state.pending_notifications[0].waybill, "KY4000000000001");
+    assert.equal(state.pending_notifications[0].carrier, "kye");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1293,4 +1294,111 @@ test("choosing a carrier whose format does not match is refused with a readable 
   }), env);
   assert.equal(response.status, 400);
   assert.match((await response.json()).error, /不符合 跨越速运 的格式/);
+});
+
+// ---------------------------------------------------------------------------
+// Declared stages, neutral records and carrier-named notifications
+// ---------------------------------------------------------------------------
+
+async function postGeneric(env, items, ctx) {
+  const body = JSON.stringify(items);
+  return handleRequest(new Request("https://example.test/carrier/generic/callback", {
+    method: "POST", headers: { ...(await genericHeaders(body)), "content-type": "application/json" }, body,
+  }), env, ctx ?? { waitUntil() {} });
+}
+
+test("a declared out_for_delivery status alerts in critical mode without Chinese keywords", async () => {
+  const sent = [];
+  const env = carrierEnv({ NOTIFICATION_MODE: "critical_only", BARK_DEVICE_KEY: "bark-key" });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { sent.push(JSON.parse(init.body)); return new Response("ok", { status: 200 }); };
+  const tasks = [];
+  try {
+    const response = await postGeneric(env, [{
+      waybill: "ORDER-EN-001",
+      status: "out_for_delivery",
+      event_text: "Out for delivery",
+      courier_name: "Zhang San",
+      event_time: "2026-10-10 09:00:00",
+    }], { waitUntil: (t) => tasks.push(t) });
+    assert.equal(response.status, 200);
+    await Promise.all(tasks);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(sent.length, 1, "a declared dispatch stage must alert even in critical_only");
+  assert.match(sent[0].title, /通用 Webhook/, "the title must name the carrier, not KYE");
+  assert.match(sent[0].body, /通用 Webhook ORDER-EN-001/);
+});
+
+test("a declared stage drives the polling interval instead of the keyword fallback", async () => {
+  const env = carrierEnv();
+  const tasks = [];
+  await postGeneric(env, [{ waybill: "ORDER-STAGE-1", status: "in_transit", event_text: "Departed hub" }],
+    { waitUntil: (t) => tasks.push(t) });
+  await Promise.all(tasks);
+  // The shipment has to exist in the watchlist for the stage to be recorded against it.
+  const state = { version: 1, pending_notifications: [], shipments: {
+    "generic:ORDER-STAGE-2": { ...activeShipment("ORDER-STAGE-2"), carrier: "generic", waybill: "ORDER-STAGE-2", next_poll_at: null },
+  } };
+  await env.KYE_WATCHLIST.put("watchlist:v1", JSON.stringify(state));
+  const tasks2 = [];
+  await postGeneric(env, [{ waybill: "ORDER-STAGE-2", status: "at_destination", event_text: "Arrived" }],
+    { waitUntil: (t) => tasks2.push(t) });
+  await Promise.all(tasks2);
+  const stored = await env.KYE_WATCHLIST.get("watchlist:v1", "json");
+  const shipment = stored.shipments["generic:ORDER-STAGE-2"];
+  const minutes = (new Date(shipment.next_poll_at) - Date.parse(shipment.last_callback_at)) / 60000;
+  assert.ok(Math.abs(minutes - 15) < 1, `at_destination must poll every 15 minutes, saw ${minutes}`);
+});
+
+test("an unrecognized declared status is refused rather than silently ignored", async () => {
+  const env = carrierEnv();
+  const response = await postGeneric(env, [{ waybill: "ORDER-BAD-1", status: "teleported", event_text: "?" }]);
+  assert.equal(response.status, 400);
+});
+
+test("a stored callback event keeps the field names the local consumer reads", async () => {
+  const env = carrierEnv();
+  const tasks = [];
+  await postGeneric(env, [{
+    waybill: "ORDER-COMPAT-1", status: "in_transit", event_text: "运输中",
+    event_time: "2026-10-10 09:00:00", courier_name: "", location: "上海",
+  }], { waitUntil: (t) => tasks.push(t) });
+  await Promise.all(tasks);
+  const key = [...env.KYE_EVENTS.values.keys()].find((k) => k.startsWith("push:generic:"));
+  const stored = JSON.parse(env.KYE_EVENTS.values.get(key));
+  // Neutral record for this Worker...
+  assert.deepEqual(stored.event, {
+    waybill: "ORDER-COMPAT-1", status: "in_transit", event_text: "运输中",
+    event_time: "2026-10-10 09:00:00", location: "上海", courier_name: "",
+  });
+  // ...and the legacy shape scripts/cloud_monitor.py still parses.
+  assert.deepEqual(Object.keys(stored.payload[0]).sort(), ["desc", "deliveryName", "mailno", "step", "time"].sort());
+  assert.equal(stored.payload[0].mailno, "ORDER-COMPAT-1");
+  assert.equal(stored.payload[0].desc, "运输中");
+});
+
+test("notifications left in the outbox by an earlier release still render", async () => {
+  const sent = [];
+  const kv = new MemoryKv();
+  // Entry written with the pre-v0.3 field names and no carrier label.
+  await kv.put("watchlist:v1", JSON.stringify({
+    version: 1,
+    shipments: {},
+    pending_notifications: [{
+      mailno: "KY4000000000001", desc: "派送中", time: "2026-10-10 08:00:00",
+      deliveryName: "张三", event_fingerprint: "legacy-1",
+    }],
+  }));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { sent.push(JSON.parse(init.body)); return new Response("ok", { status: 200 }); };
+  try {
+    await scheduledMonitor(scheduledEnv(kv));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].body, /KY4000000000001：派送中/, "legacy field names must still render");
+  assert.match(sent[0].body, /快递员：张三/);
 });
