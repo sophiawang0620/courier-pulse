@@ -55,7 +55,7 @@ const EXAMPLE_ADAPTER = {
   async queryRoute(env, waybills) { /* → { ok, waitingForFirstRoute, results } */ },
   async subscribeRoute(env, waybills) { /* → { ok, message } */ },
   async verifyCallback(request, env, rawBody, environment) { /* → { ok, status, message } */ },
-  normalizeCallback(payload) { /* → [{ raw, event }] 或 null */ },
+  normalizeCallback(payload) { /* → [{ record, event }] 或 null */ },
 };
 ```
 
