@@ -16,11 +16,14 @@
 - 签收后自动停止查询
 - 自适应查询频率，并在进入收件目的地区域后缩短为约 15 分钟
 - KV 去重，避免同一节点反复通知
+- Durable Object 串行化清单更新，避免手机操作、回调和 Cron 同时写入时互相覆盖
+- 管理 API 限流，降低访问码猜测和接口滥用风险
 
 ## 工作方式
 
 ~~~text
-手机网页 ──> Worker API ──> KYE_WATCHLIST KV
+手机网页 ──> Worker API ──> WatchlistCoordinator Durable Object
+                         │             └─> KYE_WATCHLIST KV 镜像/迁移源
                          └─> 跨越 queryRoute / subscribeRoute
 
 Cloudflare Cron ──> 到期运单批量查询 ──> Bark / Telegram
@@ -47,6 +50,8 @@ Cron 可以每 15 分钟唤醒一次，但只有到达该运单自己的 next_po
 - 云端清单，对应绑定名 KYE_WATCHLIST
 
 把它们的 namespace ID 填入 cloudflare-worker/wrangler.jsonc。绑定名不要修改。
+
+`wrangler.jsonc` 还会在首次部署时自动创建 SQLite-backed Durable Object，用于串行处理云端清单写入；不需要手工创建数据库或填写 ID。配置中的 `APP_RATE_LIMITER` 用于限制管理 API，每分钟默认允许 60 次请求。若同一 Cloudflare 账号内已有其他 Worker 使用 namespace_id `2061720250`，请把它改成另一个正整数，避免两个项目共享计数器。
 
 ### 2. 配置 Worker Secrets
 
@@ -107,7 +112,9 @@ pnpm exec wrangler deploy
 
 仓库将 Wrangler 固定在 lockfile 记录的版本；请勿删除 lockfile 后直接拉取未经验证的最新版。
 
-访问 https://你的-Worker-域名/health，应返回 ok: true。手机访问根地址或 /app，输入 APP_ACCESS_TOKEN 后即可管理运单。
+访问 https://你的-Worker-域名/health，应返回 ok: true。带上 `Authorization: Bearer <APP_ACCESS_TOKEN>` 再访问同一地址，才会额外返回 capabilities，应能看到 watchlist_storage: durable_object 与 rate_limiting: true；不带访问码的健康检查不会暴露这些部署细节。手机访问根地址或 /app，输入 APP_ACCESS_TOKEN 后即可管理运单。
+
+从旧版升级时无需手工搬运：Durable Object 第一次收到请求会从 `KYE_WATCHLIST` 导入现有清单，之后每次更新仍镜像回 KV，便于回退。不要在升级部署前删除原有 KV 绑定或 namespace。
 
 将以下两个地址配置到跨越开放平台相应环境的 PushRoute 回调：
 
@@ -138,7 +145,7 @@ pnpm exec wrangler deploy
 - 完整收件地址和寄件地址不会写入 KV；只保存目的地行政区名称，用于判断是否进入目的区域。
 - 运单号、最新物流节点、快递员姓名（若接口返回）和调度状态会保存在你的 Cloudflare KV；回调中的手机号和未使用字段不会持久化。
 - 手机访问码保存在浏览器 localStorage。不要在公共或共享设备上登录。
-- 回调使用跨越签名验签；管理 API 使用 Bearer token。
+- 回调使用跨越签名验签；管理 API 使用 Bearer token，并通过 Cloudflare Rate Limiting binding 做近似限流。合法访问码以不可逆摘要作为计数键，错误访问以来源摘要计数，原始访问码不会写入限流键或日志。
 - 回调时间戳仅接受约五分钟内的请求，降低合法请求被延迟重放的风险。
 - 通知渠道暂时失败时，待发送节点会保存在 KV 并在下一次 Cron 重试，不会为了重试通知而再次查询跨越；单条通知最多尝试 32 次且最长保留 7 天。
 - 本地 secrets、状态 JSON 和 Python 缓存均已加入 .gitignore。

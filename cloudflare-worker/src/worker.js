@@ -11,8 +11,9 @@ const APP_HEADERS = {
   "x-frame-options": "DENY",
 };
 
-const WORKER_VERSION = "2026-10-09-review-remediation-v2";
+const WORKER_VERSION = "0.2.0-platform-hardening";
 const WATCHLIST_KEY = "watchlist:v1";
+const WATCHLIST_COORDINATOR_NAME = "primary";
 const WAYBILL_PATTERN = /^(?:KY|KYE)[A-Z0-9]{8,20}$/i;
 const APP_TOKEN_MIN_LENGTH = 32;
 const CALLBACK_MAX_SKEW_MS = 5 * 60 * 1000;
@@ -164,13 +165,47 @@ function appAuthorized(request, env) {
   return constantTimeEqual(header, `Bearer ${token}`);
 }
 
+function watchlistStorage(env) {
+  return env.WATCHLIST_STORAGE ?? env.KYE_WATCHLIST;
+}
+
+function watchlistCoordinator(env) {
+  const namespace = env.WATCHLIST_COORDINATOR;
+  if (!namespace) return null;
+  if (typeof namespace.getByName === "function") return namespace.getByName(WATCHLIST_COORDINATOR_NAME);
+  if (typeof namespace.idFromName === "function" && typeof namespace.get === "function") {
+    return namespace.get(namespace.idFromName(WATCHLIST_COORDINATOR_NAME));
+  }
+  throw new Error("watchlist coordinator binding is invalid");
+}
+
+async function managementRateLimit(request, env, routeGroup) {
+  if (!env.APP_RATE_LIMITER || typeof env.APP_RATE_LIMITER.limit !== "function") return null;
+  const authorization = request.headers.get("authorization") ?? "";
+  const validToken = routeGroup === "events"
+    ? authorized(request, env)
+    : routeGroup === "health"
+      ? (appAuthorized(request, env) || authorized(request, env))
+      : appAuthorized(request, env);
+  const actor = validToken
+    ? `token:${md5Hex(authorization)}`
+    : `unauthorized:${md5Hex(request.headers.get("cf-connecting-ip") || "unknown")}`;
+  const { success } = await env.APP_RATE_LIMITER.limit({ key: `${routeGroup}:${actor}` });
+  if (success) return null;
+  return new Response(JSON.stringify({ ok: false, error: "rate limit exceeded" }), {
+    status: 429,
+    headers: { ...JSON_HEADERS, "retry-after": "60" },
+  });
+}
+
 function emptyWatchlist() {
   return { version: 1, shipments: {}, pending_notifications: [] };
 }
 
 async function readWatchlist(env) {
-  if (!env.KYE_WATCHLIST) throw new Error("cloud watchlist is not configured");
-  const state = (await env.KYE_WATCHLIST.get(WATCHLIST_KEY, "json")) ?? emptyWatchlist();
+  const storage = watchlistStorage(env);
+  if (!storage) throw new Error("cloud watchlist is not configured");
+  const state = (await storage.get(WATCHLIST_KEY, "json")) ?? emptyWatchlist();
   if (!state || typeof state !== "object" || !state.shipments || typeof state.shipments !== "object") return emptyWatchlist();
   const pendingWasArray = Array.isArray(state.pending_notifications);
   const originalPending = pendingWasArray ? state.pending_notifications : [];
@@ -195,13 +230,14 @@ async function readWatchlist(env) {
       }
     }
   }
-  if (migrationNeeded) await env.KYE_WATCHLIST.put(WATCHLIST_KEY, JSON.stringify(state));
+  if (migrationNeeded) await storage.put(WATCHLIST_KEY, JSON.stringify(state));
   return state;
 }
 
 async function writeWatchlist(env, state) {
-  if (!env.KYE_WATCHLIST) throw new Error("cloud watchlist is not configured");
-  await env.KYE_WATCHLIST.put(WATCHLIST_KEY, JSON.stringify(state));
+  const storage = watchlistStorage(env);
+  if (!storage) throw new Error("cloud watchlist is not configured");
+  await storage.put(WATCHLIST_KEY, JSON.stringify(state));
 }
 
 function formatKyeTimestamp(date = new Date()) {
@@ -598,8 +634,8 @@ async function sendNotifications(env, environment, payload) {
   else await sendTelegramUpdate(env, environment, payload);
 }
 
-async function markCallbackVerified(env, payload, pendingNotifications = []) {
-  if (!env.KYE_WATCHLIST) return;
+async function markCallbackVerifiedDirect(env, payload, pendingNotifications = []) {
+  if (!watchlistStorage(env)) return;
   const state = await readWatchlist(env);
   let changed = false;
   const now = new Date().toISOString();
@@ -637,6 +673,17 @@ async function markCallbackVerified(env, payload, pendingNotifications = []) {
     changed = true;
   }
   if (changed) await writeWatchlist(env, state);
+}
+
+async function markCallbackVerified(env, payload, pendingNotifications = []) {
+  const coordinator = watchlistCoordinator(env);
+  if (!coordinator) return markCallbackVerifiedDirect(env, payload, pendingNotifications);
+  const response = await coordinator.fetch(new Request("https://watchlist.internal/internal/callback-state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ payload, pendingNotifications }),
+  }));
+  if (!response.ok) throw new Error(`watchlist coordinator rejected callback state with HTTP ${response.status}`);
 }
 
 async function receivePush(request, env, environment, ctx) {
@@ -850,7 +897,7 @@ function pendingPollInterval(shipment, now) {
   return Number.isFinite(started) && now.getTime() - started >= 2 * 60 * 60000 ? 60 : 15;
 }
 
-export async function scheduledMonitor(env) {
+async function scheduledMonitorDirect(env) {
   const state = await readWatchlist(env);
   const now = new Date();
   const activeShipments = Object.values(state.shipments).filter((item) => item.status === "active");
@@ -953,11 +1000,38 @@ export async function scheduledMonitor(env) {
   await writeWatchlist(env, state);
 }
 
+export async function scheduledMonitor(env) {
+  const coordinator = watchlistCoordinator(env);
+  if (!coordinator) return scheduledMonitorDirect(env);
+  const response = await coordinator.fetch(new Request("https://watchlist.internal/internal/scheduled", { method: "POST" }));
+  if (!response.ok) throw new Error(`watchlist coordinator rejected scheduled run with HTTP ${response.status}`);
+}
+
 export async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
   if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/app")) return new Response(APP_HTML, { headers: APP_HEADERS });
   if (request.method === "GET" && url.pathname === "/health") {
-    return jsonResponse({ ok: true, service: "courier-pulse", version: WORKER_VERSION, notification_mode: notificationMode(env) });
+    const body = {
+      ok: true,
+      service: "courier-pulse",
+      version: WORKER_VERSION,
+      notification_mode: notificationMode(env),
+    };
+    // An unauthenticated liveness probe stays free; a credentialed one is metered so that
+    // /health cannot be used as an unlimited oracle for guessing the management tokens.
+    if (request.headers.get("authorization")) {
+      const limited = await managementRateLimit(request, env, "health");
+      if (limited) return limited;
+      if (appAuthorized(request, env) || authorized(request, env)) {
+        body.capabilities = {
+          watchlist_storage: env.WATCHLIST_COORDINATOR ? "durable_object" : (env.KYE_WATCHLIST ? "kv" : "unconfigured"),
+          rate_limiting: Boolean(env.APP_RATE_LIMITER),
+          bark: Boolean(env.BARK_DEVICE_KEY),
+          telegram: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID),
+        };
+      }
+    }
+    return jsonResponse(body);
   }
   if (request.method === "POST" && url.pathname === "/kye/callback/sandbox") {
     return receivePush(request, env, "sandbox", ctx);
@@ -966,15 +1040,95 @@ export async function handleRequest(request, env, ctx) {
     return receivePush(request, env, "prod", ctx);
   }
   if (request.method === "GET" && url.pathname === "/events") {
+    const limited = await managementRateLimit(request, env, "events");
+    if (limited) return limited;
     return listEvents(request, env);
   }
   if (request.method === "POST" && url.pathname === "/events/ack") {
+    const limited = await managementRateLimit(request, env, "events");
+    if (limited) return limited;
     return acknowledgeEvents(request, env);
   }
-  if (request.method === "GET" && url.pathname === "/api/watchlist") return appWatchlist(request, env);
-  if (request.method === "POST" && url.pathname === "/api/watchlist/add") return appAdd(request, env);
-  if (request.method === "POST" && url.pathname === "/api/watchlist/remove") return appRemove(request, env);
+  if (
+    (request.method === "GET" && url.pathname === "/api/watchlist")
+    || (request.method === "POST" && (url.pathname === "/api/watchlist/add" || url.pathname === "/api/watchlist/remove"))
+  ) {
+    const limited = await managementRateLimit(request, env, "watchlist");
+    if (limited) return limited;
+    const coordinator = watchlistCoordinator(env);
+    if (coordinator) return coordinator.fetch(request);
+    if (request.method === "GET") return appWatchlist(request, env);
+    if (url.pathname.endsWith("/add")) return appAdd(request, env);
+    return appRemove(request, env);
+  }
   return jsonResponse({ error: "not found" }, 404);
+}
+
+class DurableWatchlistStorage {
+  constructor(storage, mirror) {
+    this.storage = storage;
+    this.mirror = mirror;
+  }
+
+  async migrate() {
+    const current = await this.storage.get(WATCHLIST_KEY);
+    if (current !== undefined && current !== null) return;
+    const legacy = this.mirror ? await this.mirror.get(WATCHLIST_KEY) : null;
+    await this.storage.put(WATCHLIST_KEY, legacy ?? JSON.stringify(emptyWatchlist()));
+  }
+
+  async get(key, type) {
+    const value = await this.storage.get(key);
+    if ((type === "json") && typeof value === "string") return JSON.parse(value);
+    return value ?? null;
+  }
+
+  async put(key, value) {
+    await this.storage.put(key, value);
+    if (this.mirror) {
+      try {
+        await this.mirror.put(key, value);
+      } catch (error) {
+        logError("watchlist KV mirror failed", error);
+      }
+    }
+  }
+}
+
+export class WatchlistCoordinator {
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+    this.storage = new DurableWatchlistStorage(ctx.storage, env.KYE_WATCHLIST);
+    this.operationTail = Promise.resolve();
+  }
+
+  fetch(request) {
+    const operation = this.operationTail.then(async () => {
+      await this.storage.migrate();
+      const runtimeEnv = { ...this.env, WATCHLIST_COORDINATOR: undefined, WATCHLIST_STORAGE: this.storage };
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.pathname === "/api/watchlist") return appWatchlist(request, runtimeEnv);
+      if (request.method === "POST" && url.pathname === "/api/watchlist/add") return appAdd(request, runtimeEnv);
+      if (request.method === "POST" && url.pathname === "/api/watchlist/remove") return appRemove(request, runtimeEnv);
+      if (request.method === "POST" && url.pathname === "/internal/scheduled") {
+        await scheduledMonitorDirect(runtimeEnv);
+        return jsonResponse({ ok: true });
+      }
+      if (request.method === "POST" && url.pathname === "/internal/callback-state") {
+        let body;
+        try { body = await request.json(); } catch { return jsonResponse({ error: "invalid json" }, 400); }
+        if (!Array.isArray(body?.payload) || !Array.isArray(body?.pendingNotifications)) {
+          return jsonResponse({ error: "invalid callback state" }, 400);
+        }
+        await markCallbackVerifiedDirect(runtimeEnv, body.payload, body.pendingNotifications);
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    });
+    this.operationTail = operation.catch(() => undefined);
+    return operation;
+  }
 }
 
 export default {
