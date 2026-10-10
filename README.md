@@ -1,8 +1,10 @@
 # Courier Pulse
 
-一个可自行部署、可扩展多家快递公司的物流追踪与通知框架。目前内置跨越速运（KYE）适配器，使用跨越开放平台正式接口查询和订阅物流节点，在 Cloudflare Workers 上定时运行，并通过 Bark 或 Telegram 推送提醒。手机网页可添加、查看和停止追踪运单，电脑关机后仍可工作。
+Courier Pulse 提供可自行部署的多快递适配器框架。任何具备合法查询 API 或 Webhook 授权的快递服务，都可以通过编写一个适配器、或经由内置的通用 Webhook 中转接入。
 
-> 本项目不是跨越速运官方产品。使用者必须自行取得跨越开放平台的合法账号、接口权限和凭证，并遵守跨越、Cloudflare、Bark 与 Telegram 的服务条款。仓库不提供、共享或绕过任何平台凭证。
+仓库内置两个适配器：**跨越速运（KYE）**使用其开放平台正式接口查询和订阅物流节点；**通用 Webhook** 供任意物流系统把自己的事件转换后推送进来。核心逻辑在 Cloudflare Workers 上定时运行，通过 Bark 或 Telegram 推送提醒。手机网页可选择快递公司、添加、查看和停止追踪运单，电脑关机后仍可工作。
+
+> 本项目不是任何一家快递公司的官方产品。使用者必须自行取得所接入快递服务的合法账号、接口权限和凭证，并遵守该快递公司以及 Cloudflare、Bark 与 Telegram 的服务条款。仓库不提供、共享或绕过任何平台凭证，也不通过爬取快递公司的公开查询页面获取数据。
 
 第三方名称、文档和 SDK 不属于本项目的 MIT 许可范围，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。准备公开自己的派生仓库前，请执行 [公开发布检查清单](docs/public-release-checklist.md)。
 
@@ -12,8 +14,8 @@
 - 内置跨越速运适配器，以及可供任意物流系统接入的通用 Webhook 适配器
 - 手机网页可选择快递公司或自动识别
 - 手机网页管理云端运单清单
-- 接收并验签跨越 PushRoute 回调
-- 以 Cloudflare Cron 主动调用 queryRoute 作为回调缺失时的保障
+- 接收并验签各适配器的回调；跨越使用其 PushRoute 签名，通用 Webhook 使用 HMAC-SHA256
+- 以 Cloudflare Cron 主动查询作为回调缺失时的保障；只推送、不支持查询的快递会被自动跳过
 - Bark 优先、Telegram 备用的节点通知
 - 测试模式提醒每个新节点；稳定模式只提醒关键节点
 - 签收后自动停止查询
@@ -27,21 +29,36 @@
 ~~~text
 手机网页 ──> Worker API ──> WatchlistCoordinator Durable Object
                          │             └─> KYE_WATCHLIST KV 镜像/迁移源
-                         └─> 跨越 queryRoute / subscribeRoute
+                         └─> 承运商适配器 ──> 上游快递 API（查询 / 订阅）
 
-Cloudflare Cron ──> 到期运单批量查询 ──> Bark / Telegram
-跨越 PushRoute ──> 验签与 KYE_EVENTS KV ──> Bark / Telegram
+Cloudflare Cron ──> 按承运商分组、批量查询到期运单 ──> Bark / Telegram
+承运商回调 ──> 适配器验签 ──> KYE_EVENTS KV ──> Bark / Telegram
 ~~~
 
-Cron 可以每 15 分钟唤醒一次，但只有到达该运单自己的 next_poll_at 才会调用跨越查询。没有活动运单或没有到期运单时，不会请求跨越接口。
+以内置的跨越适配器为例，上游调用是 `queryRoute` 与 `subscribeRoute`，回调是 PushRoute；
+通用 Webhook 适配器没有上游查询，只接收推送。
+
+Cron 每 15 分钟唤醒一次，但只有到达该运单自己的 `next_poll_at` 才会向上游发起查询。
+没有活动运单、没有到期运单，或该运单所属适配器不支持查询时，都不会产生任何上游请求。
 
 ## 前置条件
 
-- 跨越开放平台应用及生产环境权限
+所有部署都需要：
+
 - Cloudflare 账号
 - Node.js 22 或更高版本（部署和 Worker 测试）
-- 可选：Bark iOS App，或 Telegram Bot
-- 可选：Python 3.11 或更高版本（本地诊断、旧版 Windows 辅助工具）
+- 至少一种通知渠道：Bark iOS App 或 Telegram Bot
+
+按你要启用的适配器，另外需要：
+
+- **跨越速运适配器**：跨越开放平台应用及生产环境权限
+- **通用 Webhook 适配器**：一个能把自家物流事件转换成统一结构并签名推送的系统
+
+只用通用 Webhook 的部署**不需要跨越的任何凭证**。
+
+可选：
+
+- Python 3.11 或更高版本（本地诊断与旧版 Windows 辅助工具，目前仅支持跨越）
 
 ## 部署
 
@@ -51,6 +68,8 @@ Cron 可以每 15 分钟唤醒一次，但只有到达该运单自己的 next_po
 
 - 事件库，对应绑定名 KYE_EVENTS
 - 云端清单，对应绑定名 KYE_WATCHLIST
+
+这两个绑定名是早期版本留下的，与快递公司无关，所有适配器共用；改名会让已部署的实例读不到既有数据，因此保持原样。
 
 把它们的 namespace ID 填入 cloudflare-worker/wrangler.jsonc。绑定名不要修改。
 
@@ -75,7 +94,7 @@ pnpm exec wrangler secret put KYE_PROD_PLATFORM_FLAG
 pnpm exec wrangler secret put APP_ACCESS_TOKEN
 ~~~
 
-如果要启用通用 Webhook 适配器，再配置 GENERIC_WEBHOOK_SECRET（至少 32 个字符，用法见[快递适配器](docs/carrier-adapters.md)）。如果使用沙盒回调，再配置 KYE_SANDBOX_PLATFORM_FLAG；如果使用本地事件消费者，再配置 MONITOR_TOKEN。APP_ACCESS_TOKEN 是手机网页的访问码；MONITOR_TOKEN 只供本地消费者读取。两者必须使用不同的随机值，且至少 32 个字符；Worker 会拒绝使用过短访问码的管理请求。不要把任何 secret 写进配置、源码、Issue 或聊天记录。
+上面四个 `KYE_*` 是**跨越适配器专用**的；只用通用 Webhook 的部署不需要它们，跳过即可。启用通用 Webhook 请配置 `GENERIC_WEBHOOK_SECRET`（至少 32 个字符，用法见[快递适配器](docs/carrier-adapters.md)）。使用跨越沙盒回调再加 `KYE_SANDBOX_PLATFORM_FLAG`；使用本地事件消费者再加 `MONITOR_TOKEN`。APP_ACCESS_TOKEN 是手机网页的访问码；MONITOR_TOKEN 只供本地消费者读取。两者必须使用不同的随机值，且至少 32 个字符；Worker 会拒绝使用过短访问码的管理请求。不要把任何 secret 写进配置、源码、Issue 或聊天记录。
 
 通知渠道至少配置一种。配置 Bark：
 
@@ -119,7 +138,9 @@ pnpm exec wrangler deploy
 
 从旧版升级时无需手工搬运：Durable Object 第一次收到请求会从 `KYE_WATCHLIST` 导入现有清单，之后每次更新仍镜像回 KV，便于回退。不要在升级部署前删除原有 KV 绑定或 namespace。
 
-将以下两个地址配置到跨越开放平台相应环境的 PushRoute 回调：
+每个适配器的回调地址形如 `https://你的-Worker-域名/carrier/<适配器 id>/callback`，沙盒环境在末尾加 `/sandbox`。通用 Webhook 的地址即 `/carrier/generic/callback`。
+
+跨越另有两个等价别名，老配置无需改动。把对应环境的地址配置到跨越开放平台的 PushRoute 回调：
 
 - https://你的-Worker-域名/kye/callback/sandbox
 - https://你的-Worker-域名/kye/callback/prod
@@ -145,8 +166,9 @@ pnpm exec wrangler deploy
 
 ## 隐私与安全
 
-- 完整收件地址和寄件地址不会写入 KV；只保存目的地行政区名称，用于判断是否进入目的区域。
-- 运单号、最新物流节点、快递员姓名（若接口返回）和调度状态会保存在你的 Cloudflare KV；回调中的手机号和未使用字段不会持久化。
+- **跨越适配器会主动丢弃完整地址**：收件和寄件地址不会写入 KV，只保留目的地行政区名称，用于判断是否进入目的区域；回调中的手机号和未使用字段也不会持久化。
+- **其他适配器和通用 Webhook 的发送方必须自行避免**把完整地址或其他敏感信息写进统一事件字段。`event_text` 与 `location` 会被原样保存到 KV，Worker 不会对它们做清理——它无法判断哪一段文本是地址。
+- 保存在你的 Cloudflare KV 中的内容是：运单号、所属快递、最新节点的文本、时间、位置、阶段，以及快递员姓名（若上游返回）和调度状态。
 - 手机访问码保存在浏览器 localStorage。不要在公共或共享设备上登录。
 - 回调使用跨越签名验签；管理 API 使用 Bearer token，并通过 Cloudflare Rate Limiting binding 做近似限流。合法访问码以不可逆摘要作为计数键，错误访问以来源摘要计数，原始访问码不会写入限流键或日志。
 - 回调时间戳仅接受约五分钟内的请求，降低合法请求被延迟重放的风险。

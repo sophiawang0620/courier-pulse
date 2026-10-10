@@ -1,9 +1,15 @@
 ---
 name: courier-pulse
-description: Self-hosted, extensible shipment tracking and notification framework. The current built-in provider tracks KYE (跨越速运) waybills. Use for one-off checks or recurring delivery alerts. Do not use third-party tracking providers until the user approves the named provider and disclosure of the waybill data.
+description: Self-hosted, extensible shipment tracking and notification framework. The Cloudflare Worker serves any registered carrier adapter and ships with two, KYE (跨越速运) and a generic webhook; the local Python tooling described here still covers KYE only. Use for one-off checks or recurring delivery alerts. Do not use third-party tracking providers until the user approves the named provider and disclosure of the waybill data.
 ---
 
 # Courier Pulse
+
+> Scope: this file describes the **local Python tooling**, which still talks to KYE only.
+> The deployed Cloudflare Worker is carrier-agnostic — it serves any adapter registered in
+> `CARRIER_ADAPTERS` and ships with KYE plus a generic webhook. To add a carrier to the
+> Worker, follow [docs/carrier-adapters.md](docs/carrier-adapters.md); nothing in this file
+> needs to change for that.
 
 Track one or more KYE waybills and emit a notification candidate only when the latest event is both out for delivery and associated with a courier name.
 
@@ -79,4 +85,4 @@ For an official `PushRoute` webhook, verify `X-KYE-SIGN` against the exact raw r
 
 The standalone Cloudflare implementation is in `cloudflare-worker/`. It must be deployed as its own Worker named `courier-pulse`; never attach it to or modify an unrelated Pages/Workers application. Before deployment, provision the `KYE_EVENTS` and `KYE_WATCHLIST` KV bindings and set the Worker secrets documented in `cloudflare-worker/README.md`. Do not claim that a callback URL exists until deployment and its `/health` endpoint have both been verified.
 
-After deployment, consume verified push events with `scripts/cloud_monitor.py`. On Windows, use `scripts/run-cloud-monitor.ps1`; it reads `MONITOR_TOKEN` from a Windows DPAPI-encrypted local file, never from command arguments. Set `KYE_WORKER_BASE_URL` or pass `-BaseUrl` with the deployed Worker origin. The consumer uses active entries in `.kuayue-watchlist.json` unless explicit waybills are supplied. Save the shared token once with `-SaveTokenFromClipboard`, then run `-EnableAutomation` once so a local automation can decrypt a machine-DPAPI copy kept under the current user's LocalAppData ACL. Run the script without switches for a check. The consumer writes matching alerts to `.kuayue-push-state.json` before deleting their source events from Cloudflare KV. A pending alert is emitted again until notification succeeds and its `alert_id` is acknowledged with `-AckAlertId`.
+After deployment, consume verified push events with `scripts/cloud_monitor.py`. That consumer only parses KYE-shaped waybills, so events pushed by other adapters are reported as a per-event error rather than processed; the Worker itself handles them normally. On Windows, use `scripts/run-cloud-monitor.ps1`; it reads `MONITOR_TOKEN` from a Windows DPAPI-encrypted local file, never from command arguments. Set `KYE_WORKER_BASE_URL` or pass `-BaseUrl` with the deployed Worker origin. The consumer uses active entries in `.kuayue-watchlist.json` unless explicit waybills are supplied. Save the shared token once with `-SaveTokenFromClipboard`, then run `-EnableAutomation` once so a local automation can decrypt a machine-DPAPI copy kept under the current user's LocalAppData ACL. Run the script without switches for a check. The consumer writes matching alerts to `.kuayue-push-state.json` before deleting their source events from Cloudflare KV. A pending alert is emitted again until notification succeeds and its `alert_id` is acknowledged with `-AckAlertId`.

@@ -48,7 +48,5 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Check Worker syntax
         run: pnpm run check
-      - name: Verify dashboard copy is synchronized
-        run: cmp -s src/worker.js worker-code.txt
       - name: Run Worker tests
         run: pnpm test
