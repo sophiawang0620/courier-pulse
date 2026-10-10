@@ -1,8 +1,10 @@
 # Courier Pulse
 
-一个可自行部署、可扩展多家快递公司的物流追踪与通知框架。目前内置跨越速运（KYE）适配器，使用跨越开放平台正式接口查询和订阅物流节点，在 Cloudflare Workers 上定时运行，并通过 Bark 或 Telegram 推送提醒。手机网页可添加、查看和停止追踪运单，电脑关机后仍可工作。
+Courier Pulse 提供可自行部署的多快递适配器框架。任何具备合法查询 API 或 Webhook 授权的快递服务，都可以通过编写一个适配器、或经由内置的通用 Webhook 中转接入。
 
-> 本项目不是跨越速运官方产品。使用者必须自行取得跨越开放平台的合法账号、接口权限和凭证，并遵守跨越、Cloudflare、Bark 与 Telegram 的服务条款。仓库不提供、共享或绕过任何平台凭证。
+仓库内置两个适配器：**跨越速运（KYE）**使用其开放平台正式接口查询和订阅物流节点；**通用 Webhook** 供任意物流系统把自己的事件转换后推送进来。核心逻辑在 Cloudflare Workers 上定时运行，通过 Bark 或 Telegram 推送提醒。手机网页可选择快递公司、添加、查看和停止追踪运单，电脑关机后仍可工作。
+
+> 本项目不是任何一家快递公司的官方产品。使用者必须自行取得所接入快递服务的合法账号、接口权限和凭证，并遵守该快递公司以及 Cloudflare、Bark 与 Telegram 的服务条款。仓库不提供、共享或绕过任何平台凭证，也不通过爬取快递公司的公开查询页面获取数据。
 
 第三方名称、文档和 SDK 不属于本项目的 MIT 许可范围，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。准备公开自己的派生仓库前，请执行 [公开发布检查清单](docs/public-release-checklist.md)。
 
@@ -12,8 +14,8 @@
 - 内置跨越速运适配器，以及可供任意物流系统接入的通用 Webhook 适配器
 - 手机网页可选择快递公司或自动识别
 - 手机网页管理云端运单清单
-- 接收并验签跨越 PushRoute 回调
-- 以 Cloudflare Cron 主动调用 queryRoute 作为回调缺失时的保障
+- 接收并验签各适配器的回调；跨越使用其 PushRoute 签名，通用 Webhook 使用 HMAC-SHA256
+- 以 Cloudflare Cron 主动查询作为回调缺失时的保障；只推送、不支持查询的快递会被自动跳过
 - Bark 优先、Telegram 备用的节点通知
 - 测试模式提醒每个新节点；稳定模式只提醒关键节点
 - 签收后自动停止查询
@@ -51,6 +53,8 @@ Cron 可以每 15 分钟唤醒一次，但只有到达该运单自己的 next_po
 
 - 事件库，对应绑定名 KYE_EVENTS
 - 云端清单，对应绑定名 KYE_WATCHLIST
+
+这两个绑定名是早期版本留下的，与快递公司无关，所有适配器共用；改名会让已部署的实例读不到既有数据，因此保持原样。
 
 把它们的 namespace ID 填入 cloudflare-worker/wrangler.jsonc。绑定名不要修改。
 
@@ -119,7 +123,9 @@ pnpm exec wrangler deploy
 
 从旧版升级时无需手工搬运：Durable Object 第一次收到请求会从 `KYE_WATCHLIST` 导入现有清单，之后每次更新仍镜像回 KV，便于回退。不要在升级部署前删除原有 KV 绑定或 namespace。
 
-将以下两个地址配置到跨越开放平台相应环境的 PushRoute 回调：
+每个适配器的回调地址形如 `https://你的-Worker-域名/carrier/<适配器 id>/callback`，沙盒环境在末尾加 `/sandbox`。通用 Webhook 的地址即 `/carrier/generic/callback`。
+
+跨越另有两个等价别名，老配置无需改动。把对应环境的地址配置到跨越开放平台的 PushRoute 回调：
 
 - https://你的-Worker-域名/kye/callback/sandbox
 - https://你的-Worker-域名/kye/callback/prod
