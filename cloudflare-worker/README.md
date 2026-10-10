@@ -22,13 +22,13 @@ Required bindings and secrets:
 - Secret `GENERIC_WEBHOOK_SECRET` (optional; enables the generic webhook adapter, at least 32 characters).
 - Secret `APP_ACCESS_TOKEN` for the phone web page and watchlist API. It must contain at least 32 characters; shorter configured values are rejected.
 - Optional plain-text variable `NOTIFICATION_MODE`. Omit it, or set it to `all_nodes`, while testing so every newly discovered route node is notified. Set it to `critical_only` after the system is stable to notify only pickup assignment and out-for-delivery events that include a courier name.
-- Secrets `KYE_APP_KEY`, `KYE_APP_SECRET`, and `KYE_CUSTOMER_CODE` for cloud query/subscribe.
+- Secrets `KYE_APP_KEY`, `KYE_APP_SECRET`, `KYE_CUSTOMER_CODE` and `KYE_PROD_PLATFORM_FLAG`: required only when the KYE adapter is in use. A deployment serving the generic webhook alone needs none of them.
 - Secret `TELEGRAM_BOT_TOKEN` (optional; Telegram Bot API token).
 - Secret `TELEGRAM_CHAT_ID` (optional; destination chat ID).
 - Secret `BARK_DEVICE_KEY` (optional; Bark device key; preferred when set).
 - Variable `BARK_SERVER_URL` (optional; defaults to `https://api.day.app`, useful for a self-hosted Bark server).
 
-The callback verifies `X-KYE-TIMESTAMP` and `X-KYE-SIGN` against the exact raw body before parsing a push, and rejects timestamps outside a five-minute freshness window. It persists only the waybill, route text/time, step, and courier name; unused fields such as a courier phone number are discarded. Stored events expire after 14 days and are deduplicated by shipment event identity, even when a carrier changes the surrounding callback batch. Each stored event keeps both the neutral record this Worker uses and a copy under the legacy field names that `scripts/cloud_monitor.py` parses.
+The callback verifies `X-KYE-TIMESTAMP` and `X-KYE-SIGN` against the exact raw body before parsing a push, and rejects timestamps outside a five-minute freshness window. It persists only the waybill, carrier, stage, event text, time, location and courier name; unused fields such as a courier phone number are discarded. The KYE adapter additionally strips full addresses, but the Worker cannot tell which text is an address, so a sender using the generic webhook is responsible for keeping addresses and other sensitive values out of the unified event fields. Stored events expire after 14 days and are deduplicated by shipment event identity, even when a carrier changes the surrounding callback batch. Each stored event keeps both the neutral record this Worker uses and a copy under the legacy field names that `scripts/cloud_monitor.py` parses.
 
 When `BARK_DEVICE_KEY` is configured, each accepted callback is sent to Bark in the background. If Bark is not configured, both Telegram secrets are used instead. Notification failures do not cause a carrier callback to fail; the event remains in KV and the alert is retried from the outbox.
 
