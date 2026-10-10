@@ -1,6 +1,6 @@
 # Courier Pulse Worker
 
-This is the standalone Cloudflare Worker for Courier Pulse. It serves every registered carrier adapter through the routes below; two adapters ship with it, KYE (跨越速运) and a generic webhook for any logistics system that can translate its own events into the unified shape. See [carrier adapters](../docs/carrier-adapters.md) for the contract.
+This is the standalone Cloudflare Worker for Courier Pulse. It is a single file with no imports, so `src/worker.js` can be pasted straight into the Cloudflare dashboard editor if you would rather not use Wrangler. It serves every registered carrier adapter through the routes below; two adapters ship with it, KYE (跨越速运) and a generic webhook for any logistics system that can translate its own events into the unified shape. See [carrier adapters](../docs/carrier-adapters.md) for the contract.
 
 Endpoints:
 
@@ -39,7 +39,7 @@ Optional in any deployment:
 - Secret `MONITOR_TOKEN`, required only for the local `/events` consumer. When configured, it must contain at least 32 characters.
 - Plain-text variable `NOTIFICATION_MODE`. Omit it, or set it to `all_nodes`, while testing so every newly discovered route node is notified. Set it to `critical_only` after the system is stable to notify only pickup assignment and out-for-delivery events that include a courier name.
 
-Verification is each adapter's own responsibility: the Worker hands `verifyCallback` the request and the raw body and does not impose a scheme of its own. Both bundled adapters sign the exact raw request bytes, verify before any JSON parsing, and reject timestamps outside a five-minute window.
+Verification is each adapter's own responsibility: the Worker hands `verifyCallback` the request and the raw body and does not impose a scheme of its own. Both bundled adapters verify signatures calculated over the exact raw request bytes, do so before any JSON parsing, and reject timestamps outside a five-minute window.
 
 - **KYE** — headers `X-KYE-TIMESTAMP` and `X-KYE-SIGN`, an uppercase MD5 of `platformFlag + timestamp + body` as the provider specifies.
 - **Generic webhook** — headers `x-courier-pulse-timestamp` and `x-courier-pulse-signature`, a hex HMAC-SHA256 of `<timestamp>.<body>` keyed with `GENERIC_WEBHOOK_SECRET`.
