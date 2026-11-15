@@ -22,15 +22,6 @@ Run this checklist before changing the repository visibility to public.
 - Manually inspect screenshots, binary files, release assets, Issues, and pull
   request attachments; a source scanner cannot prove those are clean.
 
-## Repository settings
-
-- Protect `main` and require the `python` and `worker` CI checks before merge.
-- Block force pushes and branch deletion.
-- After the history-audit CI job has run on a pull request, add
-  `public-history` to the required checks.
-- Enable secret scanning and private vulnerability reporting when the selected
-  GitHub plan exposes those controls.
-
 ## Release
 
 - Confirm the README installation path works from a fresh account.
